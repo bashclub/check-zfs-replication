@@ -16,14 +16,14 @@
 ## GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
 ## LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-VERSION = 3.01
+VERSION = 3.05
 
 ### for check_mk usage link or copy binary to check_mk_agent/local/checkzfs
 ### create /etc/check_mk/checkzfs ## the config file name matches the filename in check_mk_agent/local/
 ###         to create a diffent set, link script to check_mk_agent/local/checkzfs2 and create /etc/check_mk/checkzfs2
 ###
 ### source: host1                   # [optional] comma seperated hostnames to check for source
-### remote: host1                   # [optional]     "              "           "
+### remote: host1                   # [optional]     "              "           "       remote
 ### prefix: host1                   # [optional] Prefix for check_mk Servicename - default REPLICA
 ### filter: rpool/data|replica      # [optional] regex filter to match source
 ### replicafilter: remote           # [optional] regex filter to match for replica snapshots
@@ -105,7 +105,6 @@ class zfs_dataset(object):
         self.lastsnapshot = ""
 
     def add_snapshot(self,**kwargs):
-        #print ("Add snapshot"+repr(kwargs))
         _obj = zfs_snapshot(self,**kwargs) ## neuen snapshot mit parametern erstellen
         self.snapshots[_obj.guid] = _obj ## zu lokalen snapshots diesem DS hinzu
         return _obj ## snapshot objeckt zurück
@@ -122,13 +121,11 @@ class zfs_dataset(object):
     def sorted_snapshots(self):
         return sorted(self.snapshots.values(), key=lambda x: x.age) ## snapshots nach alter sortiert
 
-
     @property
     def dataset_name(self): ## namen mit host prefixen
         if self.remote:
             return f"{self.remote}#{self.dataset}"
         return self.dataset
-
 
     @property
     def latest_snapshot(self): ## letzten snapshot
@@ -139,18 +136,23 @@ class zfs_dataset(object):
     def get_info(self,source,threshold=None):
         _latest = self._get_latest_snapshot(source if source != self else None) ## wenn das source dataset nicht man selber ist
         _status = None
+        _has_zfs_autosnapshot = any(map(lambda x: str(x.snapshot).startswith("zfs-auto-snap_"),self.snapshots.values()))
         _message = ""
         if source == self:
             if not self.replica:
                 _status = 1 ## warn
                 _message = _("kein Replikat gefunden")
+            if self.autosnapshot == 2 and _has_zfs_autosnapshot:
+                _status = 1 ## warn
+                _message = _("com.sun:auto-snapshot ist auf der Quelle auf true und wird evtl. mit repliziert")
         else:
-            if self.autosnapshot == 1:
-                #_status = 1 ## warn
-                _message = _("com.sun:auto-snapshot ist nicht gesetzt")
-            elif self.autosnapshot == 2:
-                #_status = 2 ## crit
-                _message = _("com.sun:auto-snapshot ist auf Replikationspartner aktiviert")
+            if _has_zfs_autosnapshot:  ## nur auf systemen mit zfs-aut-snapshot
+                if self.autosnapshot == 1:
+                    _status = 1 ## warn
+                    _message = _("com.sun:auto-snapshot ist nicht false")
+                elif self.autosnapshot == 2:
+                    _status = 2 ## crit
+                    _message = _("com.sun:auto-snapshot ist auf Replikationspartner aktiviert")
 
         if _latest:
             _threshold_status = ""
@@ -203,6 +205,12 @@ class no_regex_class(object):
     def search(*args):
         return True
 
+class negative_regex_class(object):
+    def __init__(self,compiled_regex):
+        self.regex = compiled_regex
+    def search(self,text):
+        return not self.regex.search(text)
+
 class zfscheck(object):
     ZFSLIST_REGEX = re.compile("^(?P<dataset>.*?)(?:|@(?P<snapshot>.*?))\t(?P<type>\w*)\t(?P<creation>\d+)\t(?P<guid>\d+)\t(?P<used>\d+|-)\t(?P<available>\d+|-)\t(?P<written>\d+|-)\t(?P<autosnapshot>[-\w]+)\t(?P<checkzfs>[-\w]+)$",re.M)
     ZFS_DATASETS = {}
@@ -248,7 +256,7 @@ class zfscheck(object):
     }
     COLUMN_MAPPER = {}
 
-    def __init__(self,remote,source,legacyhosts,output,prefix='REPLICA',**kwargs):
+    def __init__(self,remote,source,legacyhosts,output,mail=None,prefix='REPLICA',**kwargs):
         _start_time = time.time()
         self.remote_hosts = remote.split(",") if remote else [""] if source else [] ## wenn nicht und source woanders ... "" (also lokal) als remote
         self.source_hosts = source.split(",") if source else [""] ## wenn nix dann "" als local
@@ -256,9 +264,10 @@ class zfscheck(object):
         self.filter = None
         self.prefix = prefix.strip().replace(" ","_") ## service name bei checkmk leerzeichen durch _ ersetzen
         self.rawdata = False
+        self.mail_address = mail
         self._overall_status = []
         self.sortreverse = False
-        self.output = output
+        self.output = output if mail == None else "mail"
         self._check_kwargs(kwargs)
         self.get_data()
         if self.output != "snaplist":
@@ -325,7 +334,10 @@ class zfscheck(object):
 
             if _k in ("filter","snapshotfilter","replicafilter"):
                 if _v:
-                    _v = re.compile(_v)
+                    if _v.startswith("!"):
+                        _v = negative_regex_class(re.compile(_v[1:]))
+                    else:
+                        _v = re.compile(_v)
                 else:
                     _v = no_regex_class() ### dummy klasse .search immer True - spart abfrage ob filter vorhanden
 
@@ -580,35 +592,39 @@ class zfscheck(object):
                 _line_print = True
         return "\n".join(_out)
 
-    def html_output(self,data):
+    def html_output(self,data,columns=None):
         if not data:
             return ""
         _header = data[0].keys() if not self.columns else self.columns
         _header_names = [self.COLUMN_NAMES.get(i,i) for i in _header]
         _converter = dict((i,self.COLUMN_MAPPER.get(i,(lambda x: str(x)))) for i in _header)
-
+        _hostname = socket.getfqdn()
         _out = []
         _out.append("<html><head>")
-        _out.append("<style type='text/css'>.warn { background-color: yellow } .crit { background-color: red}</style>")
+        _out.append("<meta name='color-scheme' content='only'>")
+        _out.append("<style type='text/css'>td {font-weight: bold;} .warn { background-color: yellow; color: black; } .crit { background-color: red; color: black;}</style>")
         _out.append("<title>ZFS</title></head>")
-        _out.append("<body><table border=1>")
+        _out.append(f"<body><h2>{_hostname}</h2>")
+        _out.append("<table border=1>")
         _out.append("<tr><th>{0}</th></tr>".format("</th><th>".join(_header_names)))
         for _item in self._datasort(data):
-            _out.append("<tr class='{1}'><td>{0}</td></tr>".format("</td><td>".join([_converter.get(_col)(_item.get(_col,"")) for _col in _header]),_item.get("status","ok")))
+            _out.append("<tr class='{1}'><td>{0}</td></tr>".format("</td><td>".join([_converter.get(_col)(_item.get(_col,"")) for _col in _header]),_converter["status"](_item.get("status","0"))))
         _out.append("</table></body></html>")
         return "".join(_out)
 
     def mail_output(self,data):
         _hostname = socket.getfqdn()
-        _users = open("/etc/pve/user.cfg","rt").read()
-        _email = "root@{0}".format(_hostname)
-        _emailmatch = re.search("^user:root@pam:.*?:(?P<mail>[\w.]+@[\w.]+):.*?$",_users,re.M)
-        if _emailmatch:
-            _email = _emailmatch.group(1)
+        _email = self.mail_address
+        if not _email:
+            _users = open("/etc/pve/user.cfg","rt").read()
+            _email = "root@{0}".format(_hostname)
+            _emailmatch = re.search("^user:root@pam:.*?:(?P<mail>[\w.]+@[\w.]+):.*?$",_users,re.M)
+            if _emailmatch:
+                _email = _emailmatch.group(1)
             #raise Exception("No PVE User Email found")
         _msg = EmailMessage()
         _msg.set_content(self.table_output(data,color=False))
-        #_msg.add_alternative(self.html_output(data),subtype="html") ## FIXME wollte  irgendwie nicht als multipart ..
+        _msg.add_alternative(self.html_output(data),subtype="html") ## FIXME wollte  irgendwie nicht als multipart ..
         #_attach = MIMEApplication(self.csv_output(data),Name="zfs-check_{0}.csv".format(_hostname))
         #_attach["Content-Disposition"] = "attachement; filename=zfs-check_{0}.csv".format(_hostname)
         #_msg.attach(_attach)
@@ -654,6 +670,8 @@ if __name__ == "__main__":
                 help=_("Zeige nur folgende Spalten ({0})".format(",".join(zfscheck.VALIDCOLUMNS))))
     _parser.add_argument("--sort",type=str,choices=zfscheck.VALIDCOLUMNS,
                 help=_("Sortiere nach Spalte"))
+    _parser.add_argument("--mail",type=str,
+                help=_("Email für den Versand"))
     _parser.add_argument("--threshold",type=str,
                 help=_("Grenzwerte für Alter von Snapshots warn,crit"))
     _parser.add_argument("--rawdata",action="store_true",
@@ -693,7 +711,6 @@ if __name__ == "__main__":
         except:
             pass
         args.output = "checkmk"
-        #sys.stderr.write(repr(args.__dict__))
     try:
         ZFSCHECK_OBJ = zfscheck(**args.__dict__)
         pass ## for debugger
