@@ -16,7 +16,7 @@
 ## GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
 ## LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-VERSION = 3.17
+VERSION = 4.01
 
 ### for check_mk usage link or copy binary to check_mk_agent/local/checkzfs
 ### create /etc/check_mk/checkzfs ## the config file name matches the filename in check_mk_agent/local/
@@ -28,7 +28,8 @@ VERSION = 3.17
 ### filter: rpool/data|replica      # [optional] regex filter to match source
 ### replicafilter: remote           # [optional] regex filter to match for replica snapshots
 ### snapshotfilter:                 # [optional] regex filter to match snapshot name
-### threshold: 20,40                # [optional] threshods warn,crit in minutes
+### threshold: 20,40                # [optional] threshold warn,crit in minutes
+### maxsnapshots: 60,80             # [optional] threshold maximum of snapshots warn,crit
 ### ssh-extra-options:              # [optional] comma seperated ssh options like added with -o 
 ### ssh-identity: /path/to/priv.key # [optional] path to ssh private key
 ### disabled: 1                     # [optional] disable the script with this config 
@@ -67,13 +68,14 @@ from email.utils import formatdate
 _ = lambda x: x   ## inline translate ... maybe later
 
 class zfs_snapshot(object):
-    def __init__(self,dataset_obj,snapshot,creation,guid,written,**kwargs):
+    def __init__(self,dataset_obj,snapshot,creation,guid,written,origin,**kwargs):
         self.replica = []
         self.dataset_obj = dataset_obj
         self.snapshot = snapshot
         self.creation = int(creation)
         self.age = int(time.time() - self.creation)
         self.written = int(written)
+        self.origin = origin
         self.guid = guid
 
     def add_replica(self,snapshot):
@@ -135,7 +137,7 @@ class zfs_dataset(object):
 
     def get_info(self,source,threshold=None,ignore_replica=False):
         _latest = self._get_latest_snapshot(source if source != self else None) ## wenn das source dataset nicht man selber ist
-        _status = None
+        _status = -1
         _has_zfs_autosnapshot = any(map(lambda x: str(x.snapshot).startswith("zfs-auto-snap_"),self.snapshots.values()))
         _message = ""
         if source == self:
@@ -166,7 +168,7 @@ class zfs_dataset(object):
                     )
                 )
             if not _threshold_status:
-                if not _status:
+                if _status == -1:
                     _status = 0 ## ok
             else:
                 _message = _("Snapshot ist zu alt")
@@ -190,6 +192,7 @@ class zfs_dataset(object):
             "snapshot"      : _latest.snapshot if _latest else "",
             "age"           : _latest.age if _latest else 0,
             "written"       : _latest.written if _latest else 0,
+            "origin"        : _latest.origin if _latest else "",
             "guid"          : _latest.guid if _latest else "",
             "status"        : _status,
             "message"       : _message
@@ -212,7 +215,7 @@ class negative_regex_class(object):
         return not self.regex.search(text)
 
 class zfscheck(object):
-    ZFSLIST_REGEX = re.compile("^(?P<dataset>.*?)(?:|@(?P<snapshot>.*?))\t(?P<type>\w*)\t(?P<creation>\d+)\t(?P<guid>\d+)\t(?P<used>\d+|-)\t(?P<available>\d+|-)\t(?P<written>\d+|-)\t(?P<autosnapshot>[-\w]+)\t(?P<checkzfs>[-\w]+)$",re.M)
+    ZFSLIST_REGEX = re.compile("^(?P<dataset>.*?)(?:|@(?P<snapshot>.*?))\t(?P<type>\w*)\t(?P<creation>\d+)\t(?P<guid>\d+)\t(?P<used>\d+|-)\t(?P<available>\d+|-)\t(?P<written>\d+|-)\t(?P<origin>.*?)\t(?P<autosnapshot>[-\w]+)\t(?P<checkzfs>[-\w]+)$",re.M)
     ZFS_DATASETS = {}
     ZFS_SNAPSHOTS = {}
     #VALIDCOLUMNS = ["source","replica","type","autosnap","snapshot","creation","guid","used","referenced","size","age","status","message"] ## valid columns
@@ -237,6 +240,7 @@ class zfscheck(object):
         "available"     : _("verfügbar"),
         "replica"       : _("Replikat"),
         "written"       : _("geschrieben"),
+        "origin"        : _("Ursprung"),
         "autosnapshot"  : _("Autosnapshot"),
         "message"       : _("Kommentar")
     }
@@ -256,13 +260,15 @@ class zfscheck(object):
     }
     COLUMN_MAPPER = {}
 
-    def __init__(self,remote,source,legacyhosts,output,mail=None,prefix='REPLICA',debug=False,**kwargs):
+    def __init__(self,remote,source,sourceonly,legacyhosts,output,mail=None,prefix='REPLICA',debug=False,**kwargs):
         _start_time = time.time()
-        self.remote_hosts = remote.split(",") if remote else [""] if source else [] ## wenn nicht und source woanders ... "" (also lokal) als remote
+        self.remote_hosts = remote.split(",") if remote else [""] if source and not sourceonly else [] ## wenn nicht und source woanders ... "" (also lokal) als remote
         self.source_hosts = source.split(",") if source else [""] ## wenn nix dann "" als local
         self.legacy_hosts = legacyhosts.split(",") if legacyhosts else []
+        self.sourceonly = sourceonly
         self.filter = None
         self.debug = debug
+        self.print_debug(f"Version: {VERSION}")
         self.prefix = prefix.strip().replace(" ","_") ## service name bei checkmk leerzeichen durch _ ersetzen
         self.rawdata = False
         self.mail_address = mail
@@ -271,15 +277,18 @@ class zfscheck(object):
         self.output = output if mail == None else "mail"
         self.print_debug(f"set attribute: remote -> {self.remote_hosts!r}")
         self.print_debug(f"set attribute: source -> {self.source_hosts!r}")
+        self.print_debug(f"set attribute: sourceonly -> {sourceonly!r}")
+        self.print_debug(f"set attribute: prefix -> {prefix!r}")
         if legacyhosts:
             self.print_debug(f"set attribute: legacyhosts -> {self.legacy_hosts}")
         self._check_kwargs(kwargs)
+        self.print_debug(f"set attribute: output -> {self.output!r}")
         self.get_data()
         if self.output != "snaplist":
             _data = self.get_output()
         else:
             print(self.get_snaplist())
-        if self.output == "text":
+        if self.output == "text" or self.output == "":
             print(self.table_output(_data))
         if self.output == "html":
             print( self.html_output(_data))
@@ -332,6 +341,14 @@ class zfscheck(object):
                     raise Exception("ungültiger Spaltenname: {0} ({1})".format(_v,",".join(self.VALIDCOLUMNS)))
 
             if _k == "threshold" and _v:
+                _v = _v.split(",")
+                ## todo tage etc
+                _v = list(map(int,_v[:2])) ## convert zu int
+                if len(_v) == 1:
+                    _v = (float("inf"),_v[0])
+                _v = sorted(_v)  ## kleinere Wert ist immer warn
+
+            if _k == "maxsnapshots" and _v:
                 _v = _v.split(",")
                 ## todo tage etc
                 _v = list(map(int,_v[:2])) ## convert zu int
@@ -413,7 +430,8 @@ class zfscheck(object):
                 _snapshot = _dataset.add_snapshot(**_entry) ## snapshot dem dataset hinzufügen .. eigentliche verarbeitung Klasse oben snapshot object wird zurück gegeben
                 _source_snapshot = self.ZFS_SNAPSHOTS.get(_snapshot.guid) ## suchen ob es einen source gibt
                 if _source_snapshot: ## wenn es schon eine gleiche guid gibt
-                    _source_snapshot.add_replica(_snapshot) ## replica hinzu
+                    if self.replicafilter.search(_dataset.dataset_name):
+                        _source_snapshot.add_replica(_snapshot) ## replica hinzu
 
         self.print_debug(f"computation time: {_execution_time:0.2f} sec /  iterations: {_iteration} / matched snapshots: {_matched_snapshots} / filtered snaphots: {_filtered_snapshots}")
 
@@ -451,8 +469,8 @@ class zfscheck(object):
             if self.sourceonly == True:
                 continue
             for _replica in _dataset.replica: ## jetzt das dataset welches als source angezeigt wird (alle filter etc entsprochen nach replika durchsuchen
-                if not self.replicafilter.search(_replica.dataset_name):
-                    continue
+                #if not self.replicafilter.search(_replica.dataset_name):
+                #    continue
                 _replica_info = _replica.get_info(_dataset,threshold=self.threshold)  ## verarbeitung ausgabe aus klasse 
                 self._overall_status.append(_replica_info.get("status",-1)) ## fehler aus replica zu overall status für mail adden
                 _output.append(_replica_info)
@@ -464,7 +482,7 @@ class zfscheck(object):
             yield _match.groupdict()
 
     def _call_proc(self,remote=None):
-        ZFS_ATTRIBUTES = "name,type,creation,guid,used,available,written,com.sun:auto-snapshot,tv.sysops:checkzfs" ## wenn ändern dann auch regex oben anpassen
+        ZFS_ATTRIBUTES = "name,type,creation,guid,used,available,written,origin,com.sun:auto-snapshot,tv.sysops:checkzfs" ## wenn ändern dann auch regex oben anpassen
         ### eigentlicher zfs aufruf, sowohl local als auch remote
         zfs_args = ["zfs", "list", 
                 "-t", "all",
@@ -580,6 +598,14 @@ class zfscheck(object):
             _used       = _item.get("used","0")
             if _status == -1: ## tv.sysops:checkzfs=ignore wollen wir nicht
                 continue
+            if self.maxsnapshots:
+                _warn = self.maxsnapshots[0]
+                _crit = self.maxsnapshots[1]
+                _maxsnapshots = f"{_warn};{_crit}"
+                if _status == 0:
+                    _status = "P"
+            else:
+                _maxsnapshots = ";"
             if self.threshold:
                 _warn = self.threshold[0] * 60
                 _crit = self.threshold[1] * 60
@@ -588,7 +614,7 @@ class zfscheck(object):
                 _threshold  = ";"
             _msg        = _item.get("message","").strip()
             _msg = _msg if len(_msg) > 0 else "OK" ## wenn keine message ... dann OK
-            _out.append(f"{_status} {self.prefix}:{_source} age={_age};{_threshold}|creation={_creation};;|file_size={_written};;|fs_used={_used};;|file_count={_count};; {_replica} - {_msg}")
+            _out.append(f"{_status} {self.prefix}:{_source} age={_age};{_threshold}|creation={_creation};;|file_size={_written};;|fs_used={_used};;|file_count={_count};{_maxsnapshots} {_replica} - {_msg}")
         
         if self.piggyback != "":
             _out.insert(0,f"<<<<{self.piggyback}>>>>\n<<<local:sep(0)>>>")
@@ -704,7 +730,7 @@ if __name__ == "__main__":
                 help=_("Regex Filter Snapshot snapshots die überhaupt benutzt werden (z.B. daily)"))
     _parser.add_argument("--replicafilter",type=str,
                 help=_("Regex Filter wo nach replikaten gesucht werden soll (z.B. remote)"))
-    _parser.add_argument("--output",type=str,default="text",choices=["html","text","mail","checkmk","json","csv","snaplist"],
+    _parser.add_argument("--output",type=str,default="",choices=["html","text","mail","checkmk","json","csv","snaplist"],
                 help=_("Ausgabeformat"))
     _parser.add_argument("--columns",type=str,
                 help=_("Zeige nur folgende Spalten ({0})".format(",".join(zfscheck.VALIDCOLUMNS))))
@@ -716,6 +742,8 @@ if __name__ == "__main__":
                 help=_("Email für den Versand"))
     _parser.add_argument("--threshold",type=str,
                 help=_("Grenzwerte für Alter von Snapshots warn,crit"))
+    _parser.add_argument("--maxsnapshots",type=str,
+                help=_("Grenzwerte für maximale Snapshots warn,crit"))
     _parser.add_argument("--rawdata",action="store_true",
                help=_("zeigt Daten als Zahlen"))
     _parser.add_argument("--snaplist","-s",action="store_const",dest="output",const="snaplist",
@@ -736,7 +764,7 @@ if __name__ == "__main__":
     _is_checkmk_plugin = os.path.dirname(os.path.abspath(__file__)).find("/check_mk_agent/local") > -1 ## wenn im check_mk ordner
     if _is_checkmk_plugin:
         try: ## parse check_mk options
-            CONFIG_KEYS="disabled|source|sourceonly|piggyback|remote|legacyhosts|prefix|filter|replicafilter|threshold|snapshotfilter|ssh-identity|ssh-extra-options"
+            CONFIG_KEYS="disabled|source|sourceonly|piggyback|remote|legacyhosts|prefix|filter|replicafilter|threshold|maxsnapshots|snapshotfilter|ssh-identity|ssh-extra-options"
             _config_regex = re.compile(f"^({CONFIG_KEYS}):\s*(.*?)(?:\s+#|$)",re.M)
             _basename = os.path.basename(__file__).split(".")[0]  ## name für config ermitteln aufgrund des script namens
             _config_file = f"/etc/check_mk/{_basename}"
@@ -754,11 +782,15 @@ if __name__ == "__main__":
                 if _k == "disabled" and _v.lower().strip() in ( "1","yes","true"): ## wenn disabled dann ignorieren check wird nicht durchgeführt
                     os._exit(0)
                 if _k == "sourceonly":
-                    args.__dict__["sourceonly"] == bool(_v.lower().strip() in ( "1","yes","true"))
-                args.__dict__[_k.replace("-","_")] = _v.strip()
+                    args.sourceonly = bool(_v.lower().strip() in ( "1","yes","true"))
+                elif _k == "prefix":
+                    args.__dict__["prefix"] = _v.strip()
+                elif not args.__dict__.get(_k.replace("-","_"),None):
+                    args.__dict__[_k.replace("-","_")] = _v.strip()
+                        
         except:
             pass
-        args.output = "checkmk"
+        args.output = "checkmk" if not args.output else args.output
     try:
         ZFSCHECK_OBJ = zfscheck(**args.__dict__)
         pass ## for debugger
