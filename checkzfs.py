@@ -61,6 +61,7 @@ import json
 import os.path
 import os
 import socket
+from datetime import datetime
 from email.message import EmailMessage
 from email.mime.application import MIMEApplication
 from email.utils import formatdate
@@ -660,17 +661,31 @@ class zfscheck(object):
         _header_names = [self.COLUMN_NAMES.get(i,i) for i in _header]
         _converter = dict((i,self.COLUMN_MAPPER.get(i,(lambda x: str(x)))) for i in _header)
         _hostname = socket.getfqdn()
-        _out = []
-        _out.append("<html><head>")
-        _out.append("<meta name='color-scheme' content='only'>")
-        _out.append("<style type='text/css'>td {font-weight: bold;} .warn { background-color: yellow; color: black; } .crit { background-color: red; color: black;}</style>")
-        _out.append("<title>ZFS</title></head>")
-        _out.append(f"<body><h2>{_hostname}</h2>")
-        _out.append("<table border=1>")
-        _out.append("<tr><th>{0}</th></tr>".format("</th><th>".join(_header_names)))
+
+        _out = "<html>"
+        _out += "<head>"
+        _out += "<meta name='color-scheme' content='only'>"
+        _out += "<style type='text/css'>"
+        _out += "html{height:100%%;width:100%%;}"
+        _out += "body{color:black;width:auto;padding-top:2rem;}"
+        _out += "h1,h2{text-align:center;}"
+        _out += "table{margin: 2rem auto;}"
+        _out += "table,th,td {border:1px solid black;border-spacing:0;border-collapse:collapse;padding:.2rem;}"
+        _out += "th{text-transform:capitalize}"
+        _out += "td:first-child{text-align:center;font-weight:bold;text-transform:uppercase;}"
+        _out += "td:last-child{text-align:right;}"
+        _out += ".warn{background-color:yellow;}"
+        _out += ".crit{background-color:red;color:black;}"
+        _out += "</style>"
+        _out += "<title>Check ZFS</title></head><body>"
+        _out += f"<h1>{_hostname}</h1><h2>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</h2>"
+        _out += "<table>"
+        _out += "<tr><th>{0}</th></tr>".format("</th><th>".join(_header_names))
+
         for _item in self._datasort(data):
-            _out.append("<tr class='{1}'><td>{0}</td></tr>".format("</td><td>".join([_converter.get(_col)(_item.get(_col,"")) for _col in _header]),_converter["status"](_item.get("status","0"))))
-        _out.append("</table></body></html>")
+            _out += "<tr class='{1}'><td>{0}</td></tr>".format("</td><td>".join([_converter.get(_col)(_item.get(_col,"")) for _col in _header]),_converter["status"](_item.get("status","0")))
+        
+        _out += "</table></body></html>"
         return "".join(_out)
 
     def mail_output(self,data):
