@@ -16,7 +16,7 @@
 ## GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
 ## LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-VERSION = 4.04
+VERSION = 4.05
 
 ### for check_mk usage link or copy binary to check_mk_agent/local/checkzfs
 ### create /etc/check_mk/checkzfs ## the config file name matches the filename in check_mk_agent/local/
@@ -779,12 +779,13 @@ if __name__ == "__main__":
     _parser.add_argument("--debug",action="store_true",
                 help=_("debug Ausgabe"))
     args = _parser.parse_args()
+
+    CONFIG_KEYS="disabled|source|sourceonly|piggyback|remote|legacyhosts|prefix|filter|replicafilter|threshold|maxsnapshots|snapshotfilter|ssh-identity|ssh-extra-options"
+    _config_regex = re.compile(f"^({CONFIG_KEYS}):\s*(.*?)(?:\s+#|$)",re.M)
+    _basename = os.path.basename(__file__).split(".")[0]  ## name für config ermitteln aufgrund des script namens
     _is_checkmk_plugin = os.path.dirname(os.path.abspath(__file__)).find("/check_mk_agent/local") > -1 ## wenn im check_mk ordner
     if _is_checkmk_plugin:
         try: ## parse check_mk options
-            CONFIG_KEYS="disabled|source|sourceonly|piggyback|remote|legacyhosts|prefix|filter|replicafilter|threshold|maxsnapshots|snapshotfilter|ssh-identity|ssh-extra-options"
-            _config_regex = re.compile(f"^({CONFIG_KEYS}):\s*(.*?)(?:\s+#|$)",re.M)
-            _basename = os.path.basename(__file__).split(".")[0]  ## name für config ermitteln aufgrund des script namens
             args.config_file = f"/etc/check_mk/{_basename}"
             if not os.path.exists(args.config_file):  ### wenn checkmk aufruf und noch keine config ... default erstellen
                 if not os.path.isdir("/etc/check_mk"):
@@ -798,6 +799,23 @@ if __name__ == "__main__":
         except:
             pass
         args.output = "checkmk" if not args.output else args.output
+    _is_zabbix_plugin = os.path.dirname(os.path.abspath(__file__)).find("/zabbix/scripts") > -1 ## wenn im check_mk ordner
+    if _is_zabbix_plugin:
+        try: ## parse check_mk options
+            args.config_file = f"/etc/zabbix/checkzfs-{_basename}"
+            if not os.path.exists(args.config_file):  ### wenn checkmk aufruf und noch keine config ... default erstellen
+                if not os.path.isdir("/etc/zabbix"):
+                    os.mkdir("/etc/zabbix")
+                with open(args.config_file,"wt") as _f: ## default config erstellen
+                    _f.write("## config for checkzfs zabbix")
+                    _f.write("\n".join([f"# {_k}:" for _k in CONFIG_KEYS.split("|")]))
+                    _f.write("\n")
+                print(f"please edit config {args.config_file}")
+                os._exit(0)
+        except:
+            pass
+        args.output = "json" if not args.output else args.output
+
     if args.config_file:
         _rawconfig = open(args.config_file,"rt").read()
         for _k,_v in _config_regex.findall(_rawconfig):
