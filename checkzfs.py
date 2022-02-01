@@ -16,7 +16,7 @@
 ## GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
 ## LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-VERSION = 4.02
+VERSION = 4.04
 
 ### for check_mk usage link or copy binary to check_mk_agent/local/checkzfs
 ### create /etc/check_mk/checkzfs ## the config file name matches the filename in check_mk_agent/local/
@@ -61,7 +61,6 @@ import json
 import os.path
 import os
 import socket
-from datetime import datetime
 from email.message import EmailMessage
 from email.mime.application import MIMEApplication
 from email.utils import formatdate
@@ -531,8 +530,11 @@ class zfscheck(object):
             raise Exception(_stderr.decode(sys.stdout.encoding)) ## Raise Errorlevel with Error from proc -- kann check_mk stderr lesen? sollte das nach stdout?
         return _stdout.decode(sys.stdout.encoding) ## ausgabe kommt als byte wir wollen str
 
-    def convert_ts_date(self,ts):
-        return time.strftime(self.DATEFORMAT,time.localtime(ts))
+    def convert_ts_date(self,ts,dateformat=None):
+        if dateformat:
+            return time.strftime(dateformat,time.localtime(ts))
+        else:
+            return time.strftime(self.DATEFORMAT,time.localtime(ts))
 
     @staticmethod
     def format_status(val):
@@ -661,31 +663,30 @@ class zfscheck(object):
         _header_names = [self.COLUMN_NAMES.get(i,i) for i in _header]
         _converter = dict((i,self.COLUMN_MAPPER.get(i,(lambda x: str(x)))) for i in _header)
         _hostname = socket.getfqdn()
-
-        _out = "<html>"
-        _out += "<head>"
-        _out += "<meta name='color-scheme' content='only'>"
-        _out += "<style type='text/css'>"
-        _out += "html{height:100%%;width:100%%;}"
-        _out += "body{color:black;width:auto;padding-top:2rem;}"
-        _out += "h1,h2{text-align:center;}"
-        _out += "table{margin: 2rem auto;}"
-        _out += "table,th,td {border:1px solid black;border-spacing:0;border-collapse:collapse;padding:.2rem;}"
-        _out += "th{text-transform:capitalize}"
-        _out += "td:first-child{text-align:center;font-weight:bold;text-transform:uppercase;}"
-        _out += "td:last-child{text-align:right;}"
-        _out += ".warn{background-color:yellow;}"
-        _out += ".crit{background-color:red;color:black;}"
-        _out += "</style>"
-        _out += "<title>Check ZFS</title></head><body>"
-        _out += f"<h1>{_hostname}</h1><h2>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</h2>"
-        _out += "<table>"
-        _out += "<tr><th>{0}</th></tr>".format("</th><th>".join(_header_names))
-
+        _now = self.convert_ts_date(time.time(),'%Y-%m-%d %H:%M:%S')
+        _out = []
+        _out.append("<html>")
+        _out.append("<head>")
+        _out.append("<meta name='color-scheme' content='only'>")
+        _out.append("<style type='text/css'>")
+        _out.append("html{height:100%%;width:100%%;}")
+        _out.append("body{color:black;width:auto;padding-top:2rem;}")
+        _out.append("h1,h2{text-align:center;}")
+        _out.append("table{margin: 2rem auto;}")
+        _out.append("table,th,td {border:1px solid black;border-spacing:0;border-collapse:collapse;padding:.2rem;}")
+        _out.append("th{text-transform:capitalize}")
+        _out.append("td:first-child{text-align:center;font-weight:bold;text-transform:uppercase;}")
+        _out.append("td:last-child{text-align:right;}")
+        _out.append(".warn{background-color:yellow;}")
+        _out.append(".crit{background-color:red;color:black;}")
+        _out.append("</style>")
+        _out.append("<title>Check ZFS</title></head><body>")
+        _out.append(f"<h1>{_hostname}</h1><h2>{_now}</h2>")
+        _out.append("<table>")
+        _out.append("<tr><th>{0}</th></tr>".format("</th><th>".join(_header_names)))
         for _item in self._datasort(data):
-            _out += "<tr class='{1}'><td>{0}</td></tr>".format("</td><td>".join([_converter.get(_col)(_item.get(_col,"")) for _col in _header]),_converter["status"](_item.get("status","0")))
-        
-        _out += "</table></body></html>"
+            _out.append("<tr class='{1}'><td>{0}</td></tr>".format("</td><td>".join([_converter.get(_col)(_item.get(_col,"")) for _col in _header]),_converter["status"](_item.get("status","0"))))
+        _out.append("</table></body></html>")
         return "".join(_out)
 
     def mail_output(self,data):
@@ -755,6 +756,8 @@ if __name__ == "__main__":
                 help=_("Nur Snapshot-Alter prüfen"))
     _parser.add_argument("--mail",type=str,
                 help=_("Email für den Versand"))
+    _parser.add_argument("--config",dest="config_file",type=str,default="",
+                help=_("Config File"))
     _parser.add_argument("--threshold",type=str,
                 help=_("Grenzwerte für Alter von Snapshots warn,crit"))
     _parser.add_argument("--maxsnapshots",type=str,
@@ -782,30 +785,31 @@ if __name__ == "__main__":
             CONFIG_KEYS="disabled|source|sourceonly|piggyback|remote|legacyhosts|prefix|filter|replicafilter|threshold|maxsnapshots|snapshotfilter|ssh-identity|ssh-extra-options"
             _config_regex = re.compile(f"^({CONFIG_KEYS}):\s*(.*?)(?:\s+#|$)",re.M)
             _basename = os.path.basename(__file__).split(".")[0]  ## name für config ermitteln aufgrund des script namens
-            _config_file = f"/etc/check_mk/{_basename}"
-            if not os.path.exists(_config_file):  ### wenn checkmk aufruf und noch keine config ... default erstellen
+            args.config_file = f"/etc/check_mk/{_basename}"
+            if not os.path.exists(args.config_file):  ### wenn checkmk aufruf und noch keine config ... default erstellen
                 if not os.path.isdir("/etc/check_mk"):
                     os.mkdir("/etc/check_mk")
-                with open(_config_file,"wt") as _f: ## default config erstellen
+                with open(args.config_file,"wt") as _f: ## default config erstellen
                     _f.write("## config for checkzfs check_mk")
                     _f.write("\n".join([f"# {_k}:" for _k in CONFIG_KEYS.split("|")]))
                     _f.write("\n")
-                print(f"please edit config {_config_file}")
+                print(f"please edit config {args.config_file}")
                 os._exit(0)
-            _rawconfig = open(_config_file,"rt").read()
-            for _k,_v in _config_regex.findall(_rawconfig):
-                if _k == "disabled" and _v.lower().strip() in ( "1","yes","true"): ## wenn disabled dann ignorieren check wird nicht durchgeführt
-                    os._exit(0)
-                if _k == "sourceonly":
-                    args.sourceonly = bool(_v.lower().strip() in ( "1","yes","true"))
-                elif _k == "prefix":
-                    args.__dict__["prefix"] = _v.strip()
-                elif not args.__dict__.get(_k.replace("-","_"),None):
-                    args.__dict__[_k.replace("-","_")] = _v.strip()
-                        
         except:
             pass
         args.output = "checkmk" if not args.output else args.output
+    if args.config_file:
+        _rawconfig = open(args.config_file,"rt").read()
+        for _k,_v in _config_regex.findall(_rawconfig):
+            if _k == "disabled" and _v.lower().strip() in ( "1","yes","true"): ## wenn disabled dann ignorieren check wird nicht durchgeführt
+                os._exit(0)
+            if _k == "sourceonly":
+                args.sourceonly = bool(_v.lower().strip() in ( "1","yes","true"))
+            elif _k == "prefix":
+                args.__dict__["prefix"] = _v.strip()
+            elif not args.__dict__.get(_k.replace("-","_"),None):
+                args.__dict__[_k.replace("-","_")] = _v.strip()
+
     try:
         ZFSCHECK_OBJ = zfscheck(**args.__dict__)
         pass ## for debugger
