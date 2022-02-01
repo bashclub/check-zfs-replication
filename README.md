@@ -3,6 +3,6 @@ This script checks yout ZFS replication an generates reports in different flavou
 
 ```
 wget -O /usr/local/bin/checkzfs https://raw.githubusercontent.com/bashclub/check-zfs-replication/main/checkzfs.py
-chmod +x usr/local/bin/checkzfs
+chmod +x /usr/local/bin/checkzfs
 checkzfs --help
 ```
