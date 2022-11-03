@@ -16,7 +16,7 @@
 ## GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
 ## LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-VERSION = 4.02
+VERSION = 4.08
 
 ### for check_mk usage link or copy binary to check_mk_agent/local/checkzfs
 ### create /etc/check_mk/checkzfs ## the config file name matches the filename in check_mk_agent/local/
@@ -61,7 +61,6 @@ import json
 import os.path
 import os
 import socket
-from datetime import datetime
 from email.message import EmailMessage
 from email.mime.application import MIMEApplication
 from email.utils import formatdate
@@ -136,7 +135,7 @@ class zfs_dataset(object):
             return self.sorted_snapshots()[0]
 
 
-    def get_info(self,source,threshold=None,ignore_replica=False):
+    def get_info(self,source,threshold=None,maxsnapshots=None,ignore_replica=False):
         _latest = self._get_latest_snapshot(source if source != self else None) ## wenn das source dataset nicht man selber ist
         _status = -1
         _has_zfs_autosnapshot = any(map(lambda x: str(x.snapshot).startswith("zfs-auto-snap_"),self.snapshots.values()))
@@ -178,6 +177,18 @@ class zfs_dataset(object):
                 _message = _("Rollback zu altem Snapshot. - '{0.snapshot}' nicht mehr vorhanden".format(self.latest_snapshot))
                 _status = 2 ## crit
 
+        if maxsnapshots:
+            _maxsnapshot_status = list(
+                map(lambda x: x[1],
+                    filter(lambda y: y[0] < len(self.snapshots.keys()),
+                        zip(maxsnapshots,(1,2))
+                    )
+                )
+            )
+            if _maxsnapshot_status:
+                if _maxsnapshot_status[-1] > _status:
+                    _message = _("zu viele Snapshots")
+                    _status = _maxsnapshot_status[-1]
         if not self.checkzfs:
             _status = -1
 
@@ -464,7 +475,7 @@ class zfscheck(object):
                 continue
             #if _dataset.remote in self.remote_hosts:## or _dataset.autosnapshot == 0:  ## wenn das dataset von der remote seite ist ... dann weiter oder wenn autosnasphot explizit aus ist ... dann nicht als source hinzufügen
             #    continue
-            _dataset_info = _dataset.get_info(_dataset,threshold=self.threshold,ignore_replica=self.sourceonly)
+            _dataset_info = _dataset.get_info(_dataset,threshold=self.threshold,maxsnapshots=self.maxsnapshots,ignore_replica=self.sourceonly)
             self._overall_status.append(_dataset_info.get("status",-1))  ## alle stati für email overall status
             _output.append(_dataset_info)
             if self.sourceonly == True:
@@ -472,7 +483,7 @@ class zfscheck(object):
             for _replica in _dataset.replica: ## jetzt das dataset welches als source angezeigt wird (alle filter etc entsprochen nach replika durchsuchen
                 #if not self.replicafilter.search(_replica.dataset_name):
                 #    continue
-                _replica_info = _replica.get_info(_dataset,threshold=self.threshold)  ## verarbeitung ausgabe aus klasse 
+                _replica_info = _replica.get_info(_dataset,threshold=self.threshold,maxsnapshots=self.maxsnapshots)  ## verarbeitung ausgabe aus klasse 
                 self._overall_status.append(_replica_info.get("status",-1)) ## fehler aus replica zu overall status für mail adden
                 _output.append(_replica_info)
 
@@ -531,8 +542,11 @@ class zfscheck(object):
             raise Exception(_stderr.decode(sys.stdout.encoding)) ## Raise Errorlevel with Error from proc -- kann check_mk stderr lesen? sollte das nach stdout?
         return _stdout.decode(sys.stdout.encoding) ## ausgabe kommt als byte wir wollen str
 
-    def convert_ts_date(self,ts):
-        return time.strftime(self.DATEFORMAT,time.localtime(ts))
+    def convert_ts_date(self,ts,dateformat=None):
+        if dateformat:
+            return time.strftime(dateformat,time.localtime(ts))
+        else:
+            return time.strftime(self.DATEFORMAT,time.localtime(ts))
 
     @staticmethod
     def format_status(val):
@@ -602,15 +616,15 @@ class zfscheck(object):
             if self.maxsnapshots:
                 _warn = self.maxsnapshots[0]
                 _crit = self.maxsnapshots[1]
-                _maxsnapshots = f"{_warn};{_crit}"
-                if _status == 0:
-                    _status = "P"
+                _maxsnapshots = f"{_warn};{_crit}".replace("inf","")
+                #if _status == 0:
+                #    _status = "P"
             else:
                 _maxsnapshots = ";"
             if self.threshold:
                 _warn = self.threshold[0] * 60
                 _crit = self.threshold[1] * 60
-                _threshold  = f"{_warn};{_crit}"
+                _threshold  = f"{_warn};{_crit}".replace("inf","")
             else:
                 _threshold  = ";"
             _msg        = _item.get("message","").strip()
@@ -661,31 +675,30 @@ class zfscheck(object):
         _header_names = [self.COLUMN_NAMES.get(i,i) for i in _header]
         _converter = dict((i,self.COLUMN_MAPPER.get(i,(lambda x: str(x)))) for i in _header)
         _hostname = socket.getfqdn()
-
-        _out = "<html>"
-        _out += "<head>"
-        _out += "<meta name='color-scheme' content='only'>"
-        _out += "<style type='text/css'>"
-        _out += "html{height:100%%;width:100%%;}"
-        _out += "body{color:black;width:auto;padding-top:2rem;}"
-        _out += "h1,h2{text-align:center;}"
-        _out += "table{margin: 2rem auto;}"
-        _out += "table,th,td {border:1px solid black;border-spacing:0;border-collapse:collapse;padding:.2rem;}"
-        _out += "th{text-transform:capitalize}"
-        _out += "td:first-child{text-align:center;font-weight:bold;text-transform:uppercase;}"
-        _out += "td:last-child{text-align:right;}"
-        _out += ".warn{background-color:yellow;}"
-        _out += ".crit{background-color:red;color:black;}"
-        _out += "</style>"
-        _out += "<title>Check ZFS</title></head><body>"
-        _out += f"<h1>{_hostname}</h1><h2>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</h2>"
-        _out += "<table>"
-        _out += "<tr><th>{0}</th></tr>".format("</th><th>".join(_header_names))
-
+        _now = self.convert_ts_date(time.time(),'%Y-%m-%d %H:%M:%S')
+        _out = []
+        _out.append("<html>")
+        _out.append("<head>")
+        _out.append("<meta name='color-scheme' content='only'>")
+        _out.append("<style type='text/css'>")
+        _out.append("html{height:100%%;width:100%%;}")
+        _out.append("body{color:black;width:auto;padding-top:2rem;}")
+        _out.append("h1,h2{text-align:center;}")
+        _out.append("table{margin: 2rem auto;}")
+        _out.append("table,th,td {border:1px solid black;border-spacing:0;border-collapse:collapse;padding:.2rem;}")
+        _out.append("th{text-transform:capitalize}")
+        _out.append("td:first-child{text-align:center;font-weight:bold;text-transform:uppercase;}")
+        _out.append("td:last-child{text-align:right;}")
+        _out.append(".warn{background-color:yellow;}")
+        _out.append(".crit{background-color:red;color:black;}")
+        _out.append("</style>")
+        _out.append("<title>Check ZFS</title></head><body>")
+        _out.append(f"<h1>{_hostname}</h1><h2>{_now}</h2>")
+        _out.append("<table>")
+        _out.append("<tr><th>{0}</th></tr>".format("</th><th>".join(_header_names)))
         for _item in self._datasort(data):
-            _out += "<tr class='{1}'><td>{0}</td></tr>".format("</td><td>".join([_converter.get(_col)(_item.get(_col,"")) for _col in _header]),_converter["status"](_item.get("status","0")))
-        
-        _out += "</table></body></html>"
+            _out.append("<tr class='{1}'><td>{0}</td></tr>".format("</td><td>".join([_converter.get(_col)(_item.get(_col,"")) for _col in _header]),_converter["status"](_item.get("status","0"))))
+        _out.append("</table></body></html>")
         return "".join(_out)
 
     def mail_output(self,data):
@@ -755,6 +768,8 @@ if __name__ == "__main__":
                 help=_("Nur Snapshot-Alter prüfen"))
     _parser.add_argument("--mail",type=str,
                 help=_("Email für den Versand"))
+    _parser.add_argument("--config",dest="config_file",type=str,default="",
+                help=_("Config File"))
     _parser.add_argument("--threshold",type=str,
                 help=_("Grenzwerte für Alter von Snapshots warn,crit"))
     _parser.add_argument("--maxsnapshots",type=str,
@@ -776,36 +791,58 @@ if __name__ == "__main__":
     _parser.add_argument("--debug",action="store_true",
                 help=_("debug Ausgabe"))
     args = _parser.parse_args()
+
+    CONFIG_KEYS="disabled|source|sourceonly|piggyback|remote|legacyhosts|prefix|filter|replicafilter|threshold|maxsnapshots|snapshotfilter|ssh-identity|ssh-extra-options"
+    _config_regex = re.compile(f"^({CONFIG_KEYS}):\s*(.*?)(?:\s+#|$)",re.M)
+    _basename = os.path.basename(__file__).split(".")[0]  ## name für config ermitteln aufgrund des script namens
     _is_checkmk_plugin = os.path.dirname(os.path.abspath(__file__)).find("/check_mk_agent/local") > -1 ## wenn im check_mk ordner
     if _is_checkmk_plugin:
         try: ## parse check_mk options
-            CONFIG_KEYS="disabled|source|sourceonly|piggyback|remote|legacyhosts|prefix|filter|replicafilter|threshold|maxsnapshots|snapshotfilter|ssh-identity|ssh-extra-options"
-            _config_regex = re.compile(f"^({CONFIG_KEYS}):\s*(.*?)(?:\s+#|$)",re.M)
-            _basename = os.path.basename(__file__).split(".")[0]  ## name für config ermitteln aufgrund des script namens
-            _config_file = f"/etc/check_mk/{_basename}"
-            if not os.path.exists(_config_file):  ### wenn checkmk aufruf und noch keine config ... default erstellen
-                if not os.path.isdir("/etc/check_mk"):
-                    os.mkdir("/etc/check_mk")
-                with open(_config_file,"wt") as _f: ## default config erstellen
+            _check_mk_configdir = "/etc/check_mk"
+            if not os.path.isdir(_check_mk_configdir):
+                _check_mk_configdir = "/etc/check_mk"
+            args.config_file = f"{_check_mk_configdir}/{_basename}"
+            if not os.path.exists(args.config_file):  ### wenn checkmk aufruf und noch keine config ... default erstellen
+                if not os.path.isdir(_check_mk_configdir):
+                    os.mkdir(_check_mk_configdir)
+                with open(args.config_file,"wt") as _f: ## default config erstellen
                     _f.write("## config for checkzfs check_mk")
                     _f.write("\n".join([f"# {_k}:" for _k in CONFIG_KEYS.split("|")]))
                     _f.write("\n")
-                print(f"please edit config {_config_file}")
+                print(f"please edit config {args.config_file}")
                 os._exit(0)
-            _rawconfig = open(_config_file,"rt").read()
-            for _k,_v in _config_regex.findall(_rawconfig):
-                if _k == "disabled" and _v.lower().strip() in ( "1","yes","true"): ## wenn disabled dann ignorieren check wird nicht durchgeführt
-                    os._exit(0)
-                if _k == "sourceonly":
-                    args.sourceonly = bool(_v.lower().strip() in ( "1","yes","true"))
-                elif _k == "prefix":
-                    args.__dict__["prefix"] = _v.strip()
-                elif not args.__dict__.get(_k.replace("-","_"),None):
-                    args.__dict__[_k.replace("-","_")] = _v.strip()
-                        
         except:
             pass
         args.output = "checkmk" if not args.output else args.output
+    _is_zabbix_plugin = os.path.dirname(os.path.abspath(__file__)).find("/zabbix/scripts") > -1 ## wenn im check_mk ordner
+    if _is_zabbix_plugin:
+        try: ## parse check_mk options
+            args.config_file = f"/etc/zabbix/checkzfs-{_basename}"
+            if not os.path.exists(args.config_file):  ### wenn checkmk aufruf und noch keine config ... default erstellen
+                if not os.path.isdir("/etc/zabbix"):
+                    os.mkdir("/etc/zabbix")
+                with open(args.config_file,"wt") as _f: ## default config erstellen
+                    _f.write("## config for checkzfs zabbix")
+                    _f.write("\n".join([f"# {_k}:" for _k in CONFIG_KEYS.split("|")]))
+                    _f.write("\n")
+                print(f"please edit config {args.config_file}")
+                os._exit(0)
+        except:
+            pass
+        args.output = "json" if not args.output else args.output
+
+    if args.config_file:
+        _rawconfig = open(args.config_file,"rt").read()
+        for _k,_v in _config_regex.findall(_rawconfig):
+            if _k == "disabled" and _v.lower().strip() in ( "1","yes","true"): ## wenn disabled dann ignorieren check wird nicht durchgeführt
+                os._exit(0)
+            if _k == "sourceonly":
+                args.sourceonly = bool(_v.lower().strip() in ( "1","yes","true"))
+            elif _k == "prefix":
+                args.__dict__["prefix"] = _v.strip()
+            elif not args.__dict__.get(_k.replace("-","_"),None):
+                args.__dict__[_k.replace("-","_")] = _v.strip()
+
     try:
         ZFSCHECK_OBJ = zfscheck(**args.__dict__)
         pass ## for debugger
@@ -817,4 +854,3 @@ if __name__ == "__main__":
         if args.debug:
             raise
         sys.exit(1)
-
