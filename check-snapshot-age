@@ -1,0 +1,37 @@
+#!/usr/bin/env python3
+
+import subprocess
+import re
+import time
+
+#_snapshots = open("zfs.txt","r").read()
+_snapshots = subprocess.check_output("/usr/sbin/zfs list -t snapshot -Hpo name,creation".split())
+
+LABELS=("frequent","hourly","daily","weekly","monthly","yearly","backup-zfs","bashclub-zfs")
+RE_LABELSEARCH = re.compile("|".join(LABELS))
+_datasets = {}
+for _datastore,_snapshot,_creation in re.findall("^([\w_./-]+)@([\w_.-]+)\t(\d+)",_snapshots.decode('utf-8'),re.M):
+    if _datastore not in _datasets:
+        _datasets[_datastore] = {}
+    _label = RE_LABELSEARCH.search(_snapshot)
+    if _label:
+        _label = _label.group(0)
+    else:
+        _label = "other"
+    if _label not in _datasets[_datastore]:
+        _datasets[_datastore][_label] = []
+    _datasets[_datastore][_label].append((_snapshot,int(_creation)))
+
+for _datastore in _datasets.keys():
+    print(_datastore)
+    print("-"*40)
+    for _label in _datasets[_datastore].keys():
+        _data = _datasets[_datastore][_label]
+        _first = time.strftime("%d.%m.%Y %H:%M:%S",time.localtime(_data[0][1]))
+        _last = time.strftime("%d.%m.%Y %H:%M:%S",time.localtime(_data[-1][1]))
+        _count = len(_data)
+        print(f" {_label} {_count}")
+        print(f"   {_first} {_data[0][0]}")
+        if _count > 1:
+            print(f"   {_last} {_data[-1][0]}")
+    print("")
