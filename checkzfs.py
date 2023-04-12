@@ -16,7 +16,7 @@
 ## GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
 ## LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-VERSION = 4.08
+VERSION = 4.09
 
 ### for check_mk usage link or copy binary to check_mk_agent/local/checkzfs
 ### create /etc/check_mk/checkzfs ## the config file name matches the filename in check_mk_agent/local/
@@ -788,6 +788,8 @@ if __name__ == "__main__":
                 help=_("Zuordnung zu anderem Host bei checkmk"))
     _parser.add_argument("--ssh-extra-options",type=str,
                 help=_("zusätzliche SSH Optionen mit Komma getrennt (HostKeyAlgorithms=ssh-rsa)"))
+    _parser.add_argument("--update",nargs="?",const="main",type=str,choices=["main","testing"],
+        help=_("check for update"))
     _parser.add_argument("--debug",action="store_true",
                 help=_("debug Ausgabe"))
     args = _parser.parse_args()
@@ -844,8 +846,60 @@ if __name__ == "__main__":
                 args.__dict__[_k.replace("-","_")] = _v.strip()
 
     try:
-        ZFSCHECK_OBJ = zfscheck(**args.__dict__)
-        pass ## for debugger
+        if args.update:
+            import requests
+            import hashlib
+            import base64
+            from datetime import datetime
+            import difflib
+            _github_req = requests.get(f"https://api.github.com/repos/bashclub/check-zfs-replication/contents/checkzfs.py?ref={args.update}")
+            if _github_req.status_code != 200:
+                raise Exception("Github Error")
+            _github_version = _github_req.json()
+            _github_last_modified = datetime.strptime(_github_req.headers.get("last-modified"),"%a, %d %b %Y %X %Z")
+            _new_script = base64.b64decode(_github_version.get("content")).decode("utf-8")
+            _new_version = re.findall("^VERSION\s*=\s*([0-9.]*)",_new_script,re.M)
+            _new_version = float(_new_version[0]) if _new_version else 0.0
+            _script_location = os.path.realpath(__file__)
+            _current_last_modified = datetime.fromtimestamp(int(os.path.getmtime(_script_location)))
+            with (open(_script_location,"rb")) as _f:
+                _content = _f.read()
+            _current_sha = hashlib.sha1(f"blob {len(_content)}\0".encode("utf-8") + _content).hexdigest()
+            _content = _content.decode("utf-8")
+            if _current_sha == _github_version.get("sha"):
+                print(f"allready up to date {_current_sha}")
+                sys.exit(0)
+            else:
+                if VERSION == _new_version:
+                    print("same Version but checksums mismatch")
+                elif VERSION > _new_version:
+                    print(f"ATTENTION: Downgrade from {VERSION} to {_new_version}")
+            while True:
+                try:
+                    _answer = input(f"Update {_script_location} to {_new_version} (y/n) or show difference (d)? ")
+                except KeyboardInterrupt:
+                    print("")
+                    sys.exit(0)
+                if _answer in ("Y","y","yes","j","J"):
+                    with open(_script_location,"wb") as _f:
+                        _f.write(_new_script.encode("utf-8"))
+                    
+                    print(f"updated to Version {_new_version}")
+                    break
+                elif _answer in ("D","d"):
+                    for _line in difflib.unified_diff(_content.split("\n"),
+                                _new_script.split("\n"),
+                                fromfile=f"Version: {VERSION}",
+                                fromfiledate=_current_last_modified.isoformat(),
+                                tofile=f"Version: {_new_version}",
+                                tofiledate=_github_last_modified.isoformat(),
+                                n=0,
+                                lineterm=""):
+                        print(_line)
+                else:
+                    break
+        else:
+            ZFSCHECK_OBJ = zfscheck(**args.__dict__)
     except KeyboardInterrupt:
         print("")
         sys.exit(0)
