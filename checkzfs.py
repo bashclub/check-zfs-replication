@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # vim: set fileencoding=utf-8:noet
-##  Copyright 2021 sysops.tv ;-)
+##  Copyright 2023 sysops.tv ;-)
 ##  BSD-2-Clause
 ##
 ##  Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
@@ -16,7 +16,7 @@
 ## GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
 ## LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-VERSION = 4.09
+VERSION = 4.10
 
 ### for check_mk usage link or copy binary to check_mk_agent/local/checkzfs
 ### create /etc/check_mk/checkzfs ## the config file name matches the filename in check_mk_agent/local/
@@ -802,7 +802,7 @@ if __name__ == "__main__":
         try: ## parse check_mk options
             _check_mk_configdir = "/etc/check_mk"
             if not os.path.isdir(_check_mk_configdir):
-                _check_mk_configdir = "/etc/check_mk"
+                _check_mk_configdir = os.environ["MK_CONFDIR"]
             args.config_file = f"{_check_mk_configdir}/{_basename}"
             if not os.path.exists(args.config_file):  ### wenn checkmk aufruf und noch keine config ... default erstellen
                 if not os.path.isdir(_check_mk_configdir):
