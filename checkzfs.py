@@ -16,7 +16,7 @@
 ## GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
 ## LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-VERSION = 4.10
+VERSION = "4.12"
 
 ### for check_mk usage link or copy binary to check_mk_agent/local/checkzfs
 ### create /etc/check_mk/checkzfs ## the config file name matches the filename in check_mk_agent/local/
@@ -272,7 +272,7 @@ class zfscheck(object):
     }
     COLUMN_MAPPER = {}
 
-    def __init__(self,remote,source,sourceonly,legacyhosts,output,mail=None,prefix='REPLICA',debug=False,**kwargs):
+    def __init__(self,remote,source,sourceonly,legacyhosts,output,ignoreattr,mail=None,prefix='REPLICA',debug=False,**kwargs):
         _start_time = time.time()
         self.remote_hosts = remote.split(",") if remote else [""] if source and not sourceonly else [] ## wenn nicht und source woanders ... "" (also lokal) als remote
         self.source_hosts = source.split(",") if source else [""] ## wenn nix dann "" als local
@@ -283,6 +283,7 @@ class zfscheck(object):
         self.print_debug(f"Version: {VERSION}")
         self.prefix = prefix.strip().replace(" ","_") ## service name bei checkmk leerzeichen durch _ ersetzen
         self.rawdata = False
+        self.ignoreattr = ignoreattr
         self.mail_address = mail
         self._overall_status = []
         self.sortreverse = False
@@ -494,7 +495,7 @@ class zfscheck(object):
             yield _match.groupdict()
 
     def _call_proc(self,remote=None):
-        ZFS_ATTRIBUTES = "name,type,creation,guid,used,available,written,origin,com.sun:auto-snapshot,tv.sysops:checkzfs" ## wenn ändern dann auch regex oben anpassen
+        ZFS_ATTRIBUTES = f"name,type,creation,guid,used,available,written,origin,com.sun:auto-snapshot,{self.ignoreattr}" ## wenn ändern dann auch regex oben anpassen
         ### eigentlicher zfs aufruf, sowohl local als auch remote
         zfs_args = ["zfs", "list", 
                 "-t", "all",
@@ -611,7 +612,7 @@ class zfscheck(object):
             _written    = _item.get("written","0")
             _available  = _item.get("available","0")
             _used       = _item.get("used","0")
-            if _status == -1: ## tv.sysops:checkzfs=ignore wollen wir nicht
+            if _status == -1: ## tv.sysops:checkzfs=ignore wollen wir nicht (ignoreattr)
                 continue
             if self.maxsnapshots:
                 _warn = self.maxsnapshots[0]
@@ -768,6 +769,8 @@ if __name__ == "__main__":
                 help=_("Nur Snapshot-Alter prüfen"))
     _parser.add_argument("--mail",type=str,
                 help=_("Email für den Versand"))
+    _parser.add_argument("--ignoreattr",type=str,default="tv.sysops:checkzfs",
+                help=_("ZFS Attribut für ignore"))
     _parser.add_argument("--config",dest="config_file",type=str,default="",
                 help=_("Config File"))
     _parser.add_argument("--threshold",type=str,
@@ -788,17 +791,18 @@ if __name__ == "__main__":
                 help=_("Zuordnung zu anderem Host bei checkmk"))
     _parser.add_argument("--ssh-extra-options",type=str,
                 help=_("zusätzliche SSH Optionen mit Komma getrennt (HostKeyAlgorithms=ssh-rsa)"))
-    _parser.add_argument("--update",nargs="?",const="main",type=str,choices=["main","testing"],
+    _parser.add_argument("--update",nargs="?",const="main",type=str,metavar="branch/commitid",
         help=_("check for update"))
     _parser.add_argument("--debug",action="store_true",
                 help=_("debug Ausgabe"))
     args = _parser.parse_args()
 
-    CONFIG_KEYS="disabled|source|sourceonly|piggyback|remote|legacyhosts|prefix|filter|replicafilter|threshold|maxsnapshots|snapshotfilter|ssh-identity|ssh-extra-options"
+    CONFIG_KEYS="disabled|source|sourceonly|piggyback|remote|legacyhosts|prefix|filter|replicafilter|threshold|ignoreattr|maxsnapshots|snapshotfilter|ssh-identity|ssh-extra-options"
     _config_regex = re.compile(f"^({CONFIG_KEYS}):\s*(.*?)(?:\s+#|$)",re.M)
     _basename = os.path.basename(__file__).split(".")[0]  ## name für config ermitteln aufgrund des script namens
-    _is_checkmk_plugin = os.path.dirname(os.path.abspath(__file__)).find("/check_mk_agent/local") > -1 ## wenn im check_mk ordner
-    if _is_checkmk_plugin:
+    #_is_checkmk_plugin = os.path.dirname(os.path.abspath(__file__)).find("/check_mk_agent/local") > -1 ## wenn im check_mk ordner
+    #if _is_checkmk_plugin:
+    if os.environ.get("MK_CONFDIR"):
         try: ## parse check_mk options
             _check_mk_configdir = "/etc/check_mk"
             if not os.path.isdir(_check_mk_configdir):
@@ -852,6 +856,7 @@ if __name__ == "__main__":
             import base64
             from datetime import datetime
             import difflib
+            from pkg_resources import parse_version
             _github_req = requests.get(f"https://api.github.com/repos/bashclub/check-zfs-replication/contents/checkzfs.py?ref={args.update}")
             if _github_req.status_code != 200:
                 raise Exception("Github Error")
@@ -859,7 +864,7 @@ if __name__ == "__main__":
             _github_last_modified = datetime.strptime(_github_req.headers.get("last-modified"),"%a, %d %b %Y %X %Z")
             _new_script = base64.b64decode(_github_version.get("content")).decode("utf-8")
             _new_version = re.findall("^VERSION\s*=\s*([0-9.]*)",_new_script,re.M)
-            _new_version = float(_new_version[0]) if _new_version else 0.0
+            _new_version = _new_version[0] if _new_version else "0.0.0"
             _script_location = os.path.realpath(__file__)
             _current_last_modified = datetime.fromtimestamp(int(os.path.getmtime(_script_location)))
             with (open(_script_location,"rb")) as _f:
@@ -870,9 +875,11 @@ if __name__ == "__main__":
                 print(f"allready up to date {_current_sha}")
                 sys.exit(0)
             else:
-                if VERSION == _new_version:
+                _version = parse_version(VERSION)
+                _nversion = parse_version(_new_version)
+                if _version == _nversion:
                     print("same Version but checksums mismatch")
-                elif VERSION > _new_version:
+                elif _version > _nversion:
                     print(f"ATTENTION: Downgrade from {VERSION} to {_new_version}")
             while True:
                 try:
