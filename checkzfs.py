@@ -16,7 +16,7 @@
 ## GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
 ## LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-VERSION = 4.11
+VERSION = 4.14
 
 ### for check_mk usage link or copy binary to check_mk_agent/local/checkzfs
 ### create /etc/check_mk/checkzfs ## the config file name matches the filename in check_mk_agent/local/
@@ -227,7 +227,7 @@ class negative_regex_class(object):
         return not self.regex.search(text)
 
 class zfscheck(object):
-    ZFSLIST_REGEX = re.compile("^(?P<dataset>.*?)(?:|@(?P<snapshot>.*?))\t(?P<type>\w*)\t(?P<creation>\d+)\t(?P<guid>\d+)\t(?P<used>\d+|-)\t(?P<available>\d+|-)\t(?P<written>\d+|-)\t(?P<origin>.*?)\t(?P<autosnapshot>[-\w]+)\t(?P<checkzfs>[-\w]+)$",re.M)
+    ZFSLIST_REGEX = re.compile(r"^(?P<dataset>.*?)(?:|@(?P<snapshot>.*?))\t(?P<type>\w*)\t(?P<creation>\d+)\t(?P<guid>\d+)\t(?P<used>\d+|-)\t(?P<available>\d+|-)\t(?P<written>\d+|-)\t(?P<origin>.*?)\t(?P<autosnapshot>[-\w]+)\t(?P<checkzfs>[-\w]+)$",re.M)
     ZFS_DATASETS = {}
     ZFS_SNAPSHOTS = {}
     #VALIDCOLUMNS = ["source","replica","type","autosnap","snapshot","creation","guid","used","referenced","size","age","status","message"] ## valid columns
@@ -708,7 +708,7 @@ class zfscheck(object):
         if not _email:
             _users = open("/etc/pve/user.cfg","rt").read()
             _email = "root@{0}".format(_hostname)
-            _emailmatch = re.search("^user:root@pam:.*?:(?P<mail>[\w.]+@[\w.]+):.*?$",_users,re.M)
+            _emailmatch = re.search(r"^user:root@pam:.*?:(?P<mail>[\w.]+@[\w.]+):.*?$",_users,re.M)
             if _emailmatch:
                 _email = _emailmatch.group(1)
             #raise Exception("No PVE User Email found")
@@ -791,17 +791,18 @@ if __name__ == "__main__":
                 help=_("Zuordnung zu anderem Host bei checkmk"))
     _parser.add_argument("--ssh-extra-options",type=str,
                 help=_("zusätzliche SSH Optionen mit Komma getrennt (HostKeyAlgorithms=ssh-rsa)"))
-    _parser.add_argument("--update",nargs="?",const="main",type=str,choices=["main","testing"],
+    _parser.add_argument("--update",nargs="?",const="main",type=str,metavar="branch/commitid",
         help=_("check for update"))
     _parser.add_argument("--debug",action="store_true",
                 help=_("debug Ausgabe"))
     args = _parser.parse_args()
 
     CONFIG_KEYS="disabled|source|sourceonly|piggyback|remote|legacyhosts|prefix|filter|replicafilter|threshold|ignoreattr|maxsnapshots|snapshotfilter|ssh-identity|ssh-extra-options"
-    _config_regex = re.compile(f"^({CONFIG_KEYS}):\s*(.*?)(?:\s+#|$)",re.M)
+    _config_regex = re.compile(rf"^({CONFIG_KEYS}):\s*(.*?)(?:\s+#|$)",re.M)
     _basename = os.path.basename(__file__).split(".")[0]  ## name für config ermitteln aufgrund des script namens
-    _is_checkmk_plugin = os.path.dirname(os.path.abspath(__file__)).find("/check_mk_agent/local") > -1 ## wenn im check_mk ordner
-    if _is_checkmk_plugin:
+    #_is_checkmk_plugin = os.path.dirname(os.path.abspath(__file__)).find("/check_mk_agent/local") > -1 ## wenn im check_mk ordner
+    #if _is_checkmk_plugin:
+    if os.environ.get("MK_CONFDIR"):
         try: ## parse check_mk options
             _check_mk_configdir = "/etc/check_mk"
             if not os.path.isdir(_check_mk_configdir):
@@ -855,27 +856,32 @@ if __name__ == "__main__":
             import base64
             from datetime import datetime
             import difflib
+            from pkg_resources import parse_version
             _github_req = requests.get(f"https://api.github.com/repos/bashclub/check-zfs-replication/contents/checkzfs.py?ref={args.update}")
             if _github_req.status_code != 200:
                 raise Exception("Github Error")
             _github_version = _github_req.json()
             _github_last_modified = datetime.strptime(_github_req.headers.get("last-modified"),"%a, %d %b %Y %X %Z")
             _new_script = base64.b64decode(_github_version.get("content")).decode("utf-8")
-            _new_version = re.findall("^VERSION\s*=\s*([0-9.]*)",_new_script,re.M)
-            _new_version = float(_new_version[0]) if _new_version else 0.0
+            _new_version = re.findall(r"^VERSION\s*=[\s\x22]*([0-9.]*)",_new_script,re.M)
+            _new_version = _new_version[0] if _new_version else "0.0.0"
             _script_location = os.path.realpath(__file__)
             _current_last_modified = datetime.fromtimestamp(int(os.path.getmtime(_script_location)))
             with (open(_script_location,"rb")) as _f:
                 _content = _f.read()
             _current_sha = hashlib.sha1(f"blob {len(_content)}\0".encode("utf-8") + _content).hexdigest()
             _content = _content.decode("utf-8")
+            if type(VERSION) != str:
+                VERSION = str(VERSION)
             if _current_sha == _github_version.get("sha"):
                 print(f"allready up to date {_current_sha}")
                 sys.exit(0)
             else:
-                if VERSION == _new_version:
+                _version = parse_version(VERSION)
+                _nversion = parse_version(_new_version)
+                if _version == _nversion:
                     print("same Version but checksums mismatch")
-                elif VERSION > _new_version:
+                elif _version > _nversion:
                     print(f"ATTENTION: Downgrade from {VERSION} to {_new_version}")
             while True:
                 try:
