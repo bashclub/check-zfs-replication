@@ -16,7 +16,7 @@
 ## GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
 ## LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-VERSION = "4.12"
+VERSION = 4.14
 
 ### for check_mk usage link or copy binary to check_mk_agent/local/checkzfs
 ### create /etc/check_mk/checkzfs ## the config file name matches the filename in check_mk_agent/local/
@@ -227,7 +227,7 @@ class negative_regex_class(object):
         return not self.regex.search(text)
 
 class zfscheck(object):
-    ZFSLIST_REGEX = re.compile("^(?P<dataset>.*?)(?:|@(?P<snapshot>.*?))\t(?P<type>\w*)\t(?P<creation>\d+)\t(?P<guid>\d+)\t(?P<used>\d+|-)\t(?P<available>\d+|-)\t(?P<written>\d+|-)\t(?P<origin>.*?)\t(?P<autosnapshot>[-\w]+)\t(?P<checkzfs>[-\w]+)$",re.M)
+    ZFSLIST_REGEX = re.compile(r"^(?P<dataset>.*?)(?:|@(?P<snapshot>.*?))\t(?P<type>\w*)\t(?P<creation>\d+)\t(?P<guid>\d+)\t(?P<used>\d+|-)\t(?P<available>\d+|-)\t(?P<written>\d+|-)\t(?P<origin>.*?)\t(?P<autosnapshot>[-\w]+)\t(?P<checkzfs>[-\w]+)$",re.M)
     ZFS_DATASETS = {}
     ZFS_SNAPSHOTS = {}
     #VALIDCOLUMNS = ["source","replica","type","autosnap","snapshot","creation","guid","used","referenced","size","age","status","message"] ## valid columns
@@ -708,7 +708,7 @@ class zfscheck(object):
         if not _email:
             _users = open("/etc/pve/user.cfg","rt").read()
             _email = "root@{0}".format(_hostname)
-            _emailmatch = re.search("^user:root@pam:.*?:(?P<mail>[\w.]+@[\w.]+):.*?$",_users,re.M)
+            _emailmatch = re.search(r"^user:root@pam:.*?:(?P<mail>[\w.]+@[\w.]+):.*?$",_users,re.M)
             if _emailmatch:
                 _email = _emailmatch.group(1)
             #raise Exception("No PVE User Email found")
@@ -798,7 +798,7 @@ if __name__ == "__main__":
     args = _parser.parse_args()
 
     CONFIG_KEYS="disabled|source|sourceonly|piggyback|remote|legacyhosts|prefix|filter|replicafilter|threshold|ignoreattr|maxsnapshots|snapshotfilter|ssh-identity|ssh-extra-options"
-    _config_regex = re.compile(f"^({CONFIG_KEYS}):\s*(.*?)(?:\s+#|$)",re.M)
+    _config_regex = re.compile(rf"^({CONFIG_KEYS}):\s*(.*?)(?:\s+#|$)",re.M)
     _basename = os.path.basename(__file__).split(".")[0]  ## name für config ermitteln aufgrund des script namens
     #_is_checkmk_plugin = os.path.dirname(os.path.abspath(__file__)).find("/check_mk_agent/local") > -1 ## wenn im check_mk ordner
     #if _is_checkmk_plugin:
@@ -863,7 +863,7 @@ if __name__ == "__main__":
             _github_version = _github_req.json()
             _github_last_modified = datetime.strptime(_github_req.headers.get("last-modified"),"%a, %d %b %Y %X %Z")
             _new_script = base64.b64decode(_github_version.get("content")).decode("utf-8")
-            _new_version = re.findall("^VERSION\s*=\s*([0-9.]*)",_new_script,re.M)
+            _new_version = re.findall(r"^VERSION\s*=[\s\x22]*([0-9.]*)",_new_script,re.M)
             _new_version = _new_version[0] if _new_version else "0.0.0"
             _script_location = os.path.realpath(__file__)
             _current_last_modified = datetime.fromtimestamp(int(os.path.getmtime(_script_location)))
@@ -871,6 +871,8 @@ if __name__ == "__main__":
                 _content = _f.read()
             _current_sha = hashlib.sha1(f"blob {len(_content)}\0".encode("utf-8") + _content).hexdigest()
             _content = _content.decode("utf-8")
+            if type(VERSION) != str:
+                VERSION = str(VERSION)
             if _current_sha == _github_version.get("sha"):
                 print(f"allready up to date {_current_sha}")
                 sys.exit(0)
