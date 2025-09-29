@@ -10,7 +10,7 @@ _snapshots = subprocess.check_output("/usr/sbin/zfs list -t snapshot -Hpo name,c
 LABELS=("frequent","hourly","daily","weekly","monthly","yearly","backup-zfs","bashclub-zfs")
 RE_LABELSEARCH = re.compile("|".join(LABELS))
 _datasets = {}
-for _datastore,_snapshot,_creation in re.findall("^([\w_./-]+)@([\w_.-]+)\t(\d+)",_snapshots.decode('utf-8'),re.M):
+for _datastore,_snapshot,_creation in re.findall(r"^([\w_./-]+)@([\w_.-]+)\t(\d+)",_snapshots.decode('utf-8'),re.M):
     if _datastore not in _datasets:
         _datasets[_datastore] = {}
     _label = RE_LABELSEARCH.search(_snapshot)
